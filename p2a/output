@@ -1,0 +1,13 @@
+batch.txt
+Makefile
+output
+tests
+tests-out
+try
+wish
+wish.c
+output
+pretext: exit
+
+found: exit; pretext: (null)
+content: exit

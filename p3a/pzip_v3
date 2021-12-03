@@ -1,0 +1,271 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/sysinfo.h>
+#include <pthread.h>
+pthread_mutex_t lock;
+
+
+int input(char *s,int length);
+//this is the raw data read in from the input file
+//keep track of the contents and the length of the contents
+typedef struct zipRaw{
+    int length;
+    char* contents;
+    int size;
+}z_r;
+
+
+typedef struct zipCompressed{
+    int length;
+    char* contents;
+    int* count;
+}z_c;
+
+//the final raw input that will be passed into zip function
+z_r myinput={ 0, NULL, 0};
+
+z_c last = {0, NULL, NULL};
+
+//zip the input file
+void* zip(void *input_v){
+    //printf("length: %d, size:%d\n", input->length, input->size);
+    z_r* input = (z_r*)input_v;
+    char* sentence = malloc(sizeof(char)*1024*1024);
+
+    if(input->length!= input->size){
+        for (int i = 0; i < input->size ; i ++){
+            if ((input->contents[i]) != '\0'){
+                char cnt = (input->contents)[i];
+                strncat(sentence,&cnt,1);
+            }
+        }
+    }
+    else{
+        sentence = strdup(input->contents);
+    }
+
+    int track_input=0;
+    z_c *output=malloc(sizeof(z_c*));
+    output->contents=malloc(strlen(sentence)*sizeof(int));
+    output->count=malloc(strlen(sentence)*sizeof(int));
+    output->length=0;
+    char current = sentence[0];
+    int index = 0;
+    int num = 0;
+    //check if the last one char is same as current file first char
+    int check=0;
+
+    if(strlen(last.contents)!=0){
+        if(last.contents[0]==sentence[0]) check=1;
+    }
+   
+    //pthread_mutex_lock(&lock);
+    while(track_input <= strlen(sentence)){
+
+        if(current==sentence[track_input]){
+            num++;
+        }
+        else{
+            if(check==1){
+                num+=last.count[0];
+                check=0;
+            }
+            else if(index==0){
+                output->count[index]=last.count[0];
+                output->contents[++index]=last.contents[1];
+                index++;
+            }
+            //printf("firts output: %d\n", track_input);
+            output->count[index]=num;
+            output->contents[index]=current;
+            output->length+=2;
+           
+            num=0;
+            index++;
+            current=sentence[track_input];
+            continue;
+        }  
+    track_input++;
+    }
+    //pthread_mutex_unlock(&lock);
+    last.count[0]=output->count[index-1];
+    last.contents[0]=output->contents[index-1];
+    output->contents[index-1]='\0';
+    //output->count[index-1]=NULL;
+    output->length-=2;
+    return (void*)output;
+}
+
+//check the length of the input
+void* file_read(void* filename){
+    z_r *input = (z_r*) malloc(sizeof(z_r));
+    char *f_content;
+    struct stat s;
+    int fd = open((const char*)filename, O_RDWR);
+
+    //get the status of the file
+    int status = fstat(fd, &s);
+
+    //check if fstat fails
+    if (status < 0) {
+        return NULL;
+    }
+   
+    //check if file didn't open    
+    if(fd == -1){
+        //printf("Error: File didn't open\n");
+        return NULL;
+    }
+
+    //check if couldn't retrieve file stats
+    if( s.st_size == -1){
+        close(fd);
+        //printf("Error: Couldn't retrieve file stats");
+        return NULL;
+    }
+    if( s.st_size == 0){
+        return NULL;
+    }  
+
+    //pthread_mutex_lock(&lock);
+    f_content = (char*) mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    //printf("content:%s",f_content);
+    if (f_content == MAP_FAILED) {
+        close(fd);
+        exit(1);
+    }  
+           
+    input -> contents = f_content;
+    input -> length = strlen(f_content);
+    input -> size = s.st_size;// size of the entire input file
+
+    //printf("input content: %d\n",input->size);
+
+    close(fd);
+    //pthread_exit((void*) input);
+    return (void*)input;
+}
+
+// argv[./pzip.c input input input output]
+int main(int argc, char *argv[]){
+    //no enough argument are provided
+    if (argc < 2){
+        printf("pzip: file1 [file2 ...]\n");
+        exit(1);
+    }
+    int num_input = argc - 1;
+
+    //all the input filenames
+    char *in_files[num_input];
+
+    //take the input files
+    for (int i = 0; i < num_input; i ++) {
+        in_files[i] = strdup(argv[i+1]);
+    }
+   
+    myinput.contents=malloc(__INT32_MAX__);
+
+    z_c *zipfile = (z_c*)malloc(sizeof(z_c*));
+   
+    //if too many files (file_num > 100), create one thread for each file
+    if(num_input > 100){
+        pthread_t threads[get_nprocs()];
+        int current_thread = 0;
+        while(current_thread<num_input){
+            for(int j=0; j< get_nprocs();j++){
+                    pthread_create(&threads[j], NULL, file_read, (void*)in_files[j]);
+                }
+            for(int j=0; j< get_nprocs();j++){
+                //save the output of thread
+                void * temp;
+                pthread_join(threads[j], &temp);
+                z_r *result = (z_r*)temp;
+                if(temp==NULL) continue;
+                strcat(myinput.contents, result->contents);
+                myinput.length+= result->length;
+            }
+        current_thread+=get_nprocs();
+        }
+   
+    }
+    //use multiple threads to run 1 file
+    else{    
+        for(int j= 0; j< num_input;j++){              
+            void * temp;
+            pthread_t threads[get_nprocs()];
+            temp = file_read(in_files[j]);
+                     
+            if(temp==NULL) continue;
+                       
+            z_r *result = (z_r*)temp;
+            char ** chunks=malloc(sizeof(char**));
+            int chunk_size = result->size/get_nprocs();
+           
+            //the starting position
+            int current_size=0;
+       
+            //cut result (single file) into chunks
+            for(int m=0; m<get_nprocs();m++){
+                 char* one_chunk = malloc(sizeof(char*));                
+                 //fflush(NULL);
+
+                if(current_size > result->size) {
+                    printf("enter here!\n");
+                    memcpy(one_chunk, &result->contents[current_size-chunk_size],
+                    result->size-current_size-1);
+                    break;
+                }
+
+                //chunk for each thread
+                while(result->contents[chunk_size] != '\n'){
+                    chunk_size++;
+                }
+
+                printf("chunk size:%c\n", result->contents[chunk_size-1]);                
+                memcpy(one_chunk, &result->contents[current_size], chunk_size);
+                printf("current size: %d\n", current_size);
+                current_size+=chunk_size;
+                chunks[m]=one_chunk;              
+            }
+
+            for(int j=0; j< get_nprocs();j++){
+            pthread_create(&threads[j], NULL, zip, (void*) chunks[j]);
+            }
+
+            //save the output of thread      
+            for(int j=0; j< get_nprocs();j++){
+                //save the output of thread
+                void * output;
+                pthread_join(threads[j], &output);
+                z_c *result = (z_c*)output;
+               
+                if(output==NULL) continue;
+           
+                for(int i=0; i<result->length/2; i++){
+                   
+                    fwrite(&(result->count[i]), 1, sizeof(int), stdout);
+                    fwrite(&(result->contents[i]), 1, sizeof(char), stdout);
+                }
+            }
+
+            if(strlen(last.contents)!= 0){
+            fwrite(&(last.count[0]), 1, sizeof(int), stdout);
+            fwrite(&(last.contents[1]), 1, sizeof(char), stdout);
+            }
+
+            return(0);
+        }
+    }
+
+        //printf("out contents: %d, length: %d\n", out->count[3],out->length);
+        for(int i=0; i<zipfile->length/2; i++){
+            fwrite(&(zipfile->count[i]), 1, sizeof(int), stdout);
+            fwrite(&(zipfile->contents[i]), 1, sizeof(char), stdout);
+         }  
+    return(0);
+}
